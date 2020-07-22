@@ -19,96 +19,212 @@ import matplotlib.pyplot as plt
 
 
 def main():
-    car = SimpleCar()
-    print(car.x)
-    u = [
-        -1., #2. * np.random.rand() - 1.,
-        (np.pi / 4.) * (2. * np.random.rand() - 1.) 
-    ]
-    for i in range(1000):
-        car.render()
-        u[1] = np.minimum(np.maximum(u[1] + .1 * (np.pi / 4.) * (2. * np.random.rand() - 1.), -np.pi / 4.), np.pi / 4.)
-        car.step(u)
-        print(car.x)
+    env = SimpleCar()
+    while True:
+        observation, done = env.reset(), False
+        action = [
+            np.random.choice([-1., 1]), #1., #2. * np.random.rand() - 1.,
+            (np.pi / 4.) * (2. * np.random.rand() - 1.) 
+        ]
+        for i in range(512):
+            env.render()
+            action[1] = np.minimum(np.maximum(action[1] + .1 * (np.pi / 4.) * (2. * np.random.rand() - 1.), -np.pi / 4.), np.pi / 4.)
+            # action[1] = (np.pi / 4.) * (2. * np.random.rand() - 1.)
+            new_observation, reward, done, info = env.step(action)
+            print(reward)
+            if done:
+                break
+            observation = new_observation
+    # plt.show()
 
+
+def rotation_matrix(alpha):
+    return np.array([
+        [np.cos(alpha), np.sin(alpha)],
+        [-np.sin(alpha), np.cos(alpha)]
+    ])
 
 
 class SimpleCar():
     def __init__(self):
-        # car's length
-        self.l = 3.
+        # solver timestep
+        self.dt = .05
+
+        self.fig = None
+        self.ax = None
+
+        self.xlim = [-15, 15]
+        self.ylim = [-2.5, 27.5]
+
+        self.a = 2.815
+        self.b = 1.054
+        self.c = 0.910
+        self.d = self.a + self.b + self.c
+        self.e = 1.586
+        self.f = 2.096
+        self.g = 1.557
+        self.h = 1.860
+        self.j = 0.5
+
+        self.scalex = 2.
+        self.scaley = 1.5
+
+    def reset(self):
+        self.u = np.array([0., np.pi / 4.])
 
         # initial state
         self.x = np.array([
             # rear axle center x-position
-            np.random.randn(),
+            20. * np.random.rand() - 10.,
             # rear axle center y-position
-            np.random.randn(),
+            10. * np.random.rand() + 10.,
             # direction of the car
             2. * np.pi * np.random.rand()
         ])
 
-        # solver timestep
-        self.dt = .01
-
-        self.fig = None
-        self.ax = None
+        observation = self.x
+        return observation
 
     def step(self, u):
         s, phi = u
         assert -1 <= s <= 1
         assert -np.pi / 4. <= phi <= np.pi / 4.
+        self.u = u
+
         x, y, theta = self.x
         dxdt = s * np.cos(theta)
         dydt = s * np.sin(theta)
-        dthetadt = s * np.tan(phi) / self.l
+        dthetadt = s * np.tan(phi) / self.a
 
         dxdt = np.array([dxdt, dydt, dthetadt])
         self.x += dxdt * self.dt
-        return self.x
+
+        tmp = self._bbox()
+        x, y, theta = self.x
+        # rotate
+        tmp = np.dot(tmp, rotation_matrix(theta))
+        # translate
+        tmp += np.array([[x, y]])
+
+        observation = self.x
+        reward = 1. / np.sqrt(self.x[0] ** 2 + self.x[1] ** 2)
+        done = (self._border_fcn(tmp[:, 0]) > tmp[:, 1]).any() \
+                or (tmp[:, 0] < self.xlim[0]).any() \
+                or (tmp[:, 0] > self.xlim[1]).any() \
+                or (tmp[:, 1] < self.ylim[0]).any() \
+                or (tmp[:, 1] > self.ylim[1]).any()
+        info = dict()
+        return observation, reward, done, info
+
+    def _bbox(self):
+        bbox = np.array([
+            [self.a + self.b,  .5 * self.f],
+            [self.a + self.b, -.5 * self.f],
+            [        -self.c, -.5 * self.f],
+            [        -self.c,  .5 * self.f]
+        ])
+        return bbox
+
+    def _rear_wheel(self):
+        wheel = np.array([
+            [-self.j, 0.],
+            [ self.j, 0.]
+        ])
+        return wheel
+
+    def _front_wheel(self):
+        wheel = self._rear_wheel()
+        s, phi = self.u
+        wheel = np.dot(wheel, rotation_matrix(phi))
+        return wheel
+
+    def _parking_place(self):
+        place = np.array([
+            [                      -15.,                    0.],
+            [-self.scalex * .5 * self.f,                    0.],
+            [-self.scalex * .5 * self.f, -self.scaley * self.d],
+            [ self.scalex * .5 * self.f, -self.scaley * self.d],
+            [ self.scalex * .5 * self.f,                    0.],
+            [                       15.,                    0.],
+        ])
+        place += np.array([[0., 5.]])
+        return place
+
+    def _border_fcn(self, x):
+        return -self.scaley * self.d * (np.sign(x + self.scalex * .5 * self.f) - np.sign(x - self.scalex * .5 * self.f)) / 2. + 5.
 
     def render(self):
         if self.fig is None:
             assert self.ax is None
             self.fig, self.ax = plt.subplots()
         if not self.ax.lines:
-            self.ax.plot([], [])
-            self.ax.plot([], [])
+            self.ax.plot([], [], "C0", linewidth=3)
+            for _ in range(4):
+                self.ax.plot([], [], "C1", linewidth=3)
+            self.ax.plot([], [], "C2o", markersize=6)
+
+            # self.ax.plot(*self._parking_place().T.tolist(), "C3", linewidth=3)
+
+            x = np.linspace(-15, 15, 1000)
+            y = self._border_fcn(x)
+            self.ax.plot(x, y, "C3", linewidth=3)
+            self.ax.plot([0], [0], "C3o", markersize=6)
+
             self.ax.grid()
-            self.ax.set_xlim([-10, 10])
-            self.ax.set_ylim([-10, 10])
-        ax, rect = self.ax.lines
+            self.ax.set_xlim(self.xlim)
+            self.ax.set_aspect("equal")
+            self.ax.set_ylim(self.ylim)
+        bbox, lfw, rfw, lrw, rrw, center = self.ax.lines[:6]
 
-        xs = np.zeros((2, ), np.float_)
-        ys = np.zeros((2, ), np.float_)
-        xs[1], ys[1], theta = self.x
-        xs[0] = xs[1] + np.cos(theta) * self.l
-        ys[0] = ys[1] + np.sin(theta) * self.l
-        ax.set_data(xs, ys)
+        tmp = self._bbox()
+        x, y, theta = self.x
+        # rotate
+        tmp = np.dot(tmp, rotation_matrix(theta))
+        # translate
+        tmp += np.array([[x, y]])
+        # repeat 1st point (to close the drawed object)
+        tmp = np.concatenate([tmp, tmp[[0]]])
+        bbox.set_data(tmp.T)
 
-        tmp = .333
-        rxs = [
-            xs[0] + tmp * self.l * np.cos(theta + np.pi / 4.),
-            xs[0] + tmp * self.l * np.cos(theta - np.pi / 4.),
-            xs[1] - tmp * self.l * np.cos(theta + np.pi / 4.),
-            xs[1] - tmp * self.l * np.cos(theta - np.pi / 4.),
-            xs[0] + tmp * self.l * np.cos(theta + np.pi / 4.),
-        ]
-        rys = [
-            ys[0] + tmp * self.l * np.sin(theta + np.pi / 4.),
-            ys[0] + tmp * self.l * np.sin(theta - np.pi / 4.),
-            ys[1] - tmp * self.l * np.sin(theta + np.pi / 4.),
-            ys[1] - tmp * self.l * np.sin(theta - np.pi / 4.),
-            ys[0] + tmp * self.l * np.sin(theta + np.pi / 4.),
-        ]
-        rect.set_data(rxs, rys)
+        tmp = self._front_wheel()
+        tmp += np.array([[self.a,  self.e / 2.]])
+        # rotate
+        tmp = np.dot(tmp, rotation_matrix(theta))
+        # translate
+        tmp += np.array([[x, y]])
+        lfw.set_data(tmp.T)
 
-        # self.ax.relim()
-        # self.ax.autoscale_view()
+        tmp = self._front_wheel()
+        tmp += np.array([[self.a, -self.e / 2.]])
+        # rotate
+        tmp = np.dot(tmp, rotation_matrix(theta))
+        # translate
+        tmp += np.array([[x, y]])
+        rfw.set_data(tmp.T)
+
+        tmp = self._rear_wheel()
+        tmp += np.array([[0.,  self.g / 2.]])
+        # rotate
+        tmp = np.dot(tmp, rotation_matrix(theta))
+        # translate
+        tmp += np.array([[x, y]])
+        lrw.set_data(tmp.T)
+
+        tmp = self._rear_wheel()
+        tmp += np.array([[0., -self.g / 2.]])
+        # rotate
+        tmp = np.dot(tmp, rotation_matrix(theta))
+        # translate
+        tmp += np.array([[x, y]])
+        rrw.set_data(tmp.T)
+
+        center.set_data([x], [y])
+
+        self.ax.relim()
+        self.ax.autoscale_view()
         plt.draw()
         plt.pause(1e-07)
     
-
 
 if __name__ == "__main__":
     main()
